@@ -773,24 +773,65 @@
 
   .cal-submit-hint { font-size: 11px; color: #71717A; }
 
+  .mobile-utils { display: none; }
+
   @media (max-width: 700px) {
     .app-shell { flex-direction: column; }
     .sidebar {
       width: 100%;
       height: auto;
       position: static;
-      flex-direction: row;
-      align-items: center;
-      overflow-x: auto;
-      padding: 1rem;
-      gap: 1rem;
+      flex-direction: column;
+      align-items: stretch;
+      overflow-x: visible;
+      padding: 1rem 1rem 0.75rem;
+      gap: 0.75rem;
+      border-right: none;
+      border-bottom: 1px solid #26262A;
     }
-    .nav-list { flex-direction: row; }
-    .sidebar-foot { margin-top: 0; padding-top: 0; border-top: none; flex-direction: row; align-items: center; }
-    .content-area { padding: 1.5rem 1rem 3rem; }
-    thead th { font-size: 9px; padding: 8px 4px; }
-    tbody td { font-size: 11px; padding: 6px 4px; }
-    .tbtn, .locked-mark { width: 22px; height: 22px; font-size: 11px; border-radius: 6px; }
+    .sidebar-title { text-align: center; font-size: 14px; }
+    .nav-list { flex-direction: row; gap: 8px; }
+    .nav-item {
+      flex: 1;
+      text-align: center;
+      padding: 12px 8px;
+      font-size: 13px;
+      border: 1px solid #26262A;
+    }
+    .nav-item.active { border-color: #3B82F6; }
+    .sidebar-foot { display: none; }
+
+    .mobile-utils {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 2rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid #202023;
+    }
+    .mobile-utils button {
+      text-align: left;
+      font-size: 13px;
+      padding: 10px 0;
+    }
+
+    .content-area { padding: 1.25rem 1rem 3rem; }
+    .top { gap: 1rem; }
+    .countdown-card { width: 100%; justify-content: space-between; }
+    .metrics { grid-template-columns: repeat(2, 1fr); }
+
+    thead th { font-size: 10px; padding: 8px 4px; }
+    tbody td { font-size: 12px; padding: 6px 4px; }
+    .tbtn, .locked-mark { width: 30px; height: 30px; font-size: 13px; border-radius: 8px; }
+    .toggle-pair { gap: 6px; }
+    td.rowlabel { padding-left: 12px; font-size: 12px; }
+    th.rowlabel-head { padding-left: 12px; }
+    .day-head-date { font-size: 11px; }
+
+    .week-pill { padding: 10px 12px; }
+    .submit-btn { padding: 9px 12px; font-size: 12px; }
+
+    .meal-grid { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -805,6 +846,9 @@
     </div>
     <div class="sidebar-foot">
       <div class="storage-note" id="storageNote"></div>
+      <button class="clear-link" id="exportDataBtn">Exportar dados</button>
+      <button class="clear-link" id="importDataBtn">Importar dados</button>
+      <input type="file" id="importFileInput" accept="application/json" style="display:none">
       <button class="clear-link" id="clearDataBtn">Limpar todos os dados</button>
     </div>
   </nav>
@@ -901,6 +945,13 @@
           <div id="calorieList"></div>
         </div>
 
+      </div>
+
+      <div class="mobile-utils">
+        <div class="storage-note" id="storageNoteMobile"></div>
+        <button class="clear-link" id="exportDataBtnMobile">Exportar dados</button>
+        <button class="clear-link" id="importDataBtnMobile">Importar dados</button>
+        <button class="clear-link" id="clearDataBtnMobile">Limpar todos os dados</button>
       </div>
 
     </div>
@@ -1343,6 +1394,52 @@ async function onSubmitClick(e) {
   refreshAll();
 }
 
+function onExportData() {
+  const payload = JSON.stringify(dataStore, null, 2);
+  const blob = new Blob([payload], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const today = toKey(new Date());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `controle-adesao-backup-${today}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function onImportClick() {
+  document.getElementById('importFileInput').click();
+}
+
+async function onImportFileSelected(e) {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+
+  let parsed;
+  try {
+    const text = await file.text();
+    parsed = JSON.parse(text);
+  } catch (err) {
+    await showConfirm('Não foi possível ler esse arquivo. Verifique se é o arquivo exportado pelo próprio app.', true);
+    return;
+  }
+
+  const ok = await showConfirm('Importar esse arquivo vai substituir todos os dados atuais deste dispositivo pelos dados do arquivo. Continuar?', true);
+  if (!ok) return;
+
+  const newStore = {};
+  Object.keys(parsed).forEach(key => {
+    if (key === '__settings') { newStore.__settings = parsed.__settings; return; }
+    newStore[key] = migrateDay(parsed[key]);
+  });
+  dataStore = newStore;
+  await saveData();
+  selectedWeekIndex = null;
+  refreshAll();
+}
+
 async function onClearData() {
   const ok = await showConfirm('Apagar todos os dados registrados? Essa ação não pode ser desfeita.', true);
   if (!ok) return;
@@ -1683,12 +1780,13 @@ function updateMetrics(dateKeysAsc) {
   const last = dateKeysAsc[dateKeysAsc.length - 1];
   document.getElementById('rangeLabel').textContent = `${fmtDate(first)} — ${fmtDate(last)}`;
 
+  const noteHtml = hasCloudStorage
+    ? '<span class="storage-dot"></span>salvo na nuvem do artifact'
+    : '<span class="storage-dot" style="background:#F59E0B"></span>salvo neste navegador (localStorage)';
   const note = document.getElementById('storageNote');
-  if (hasCloudStorage) {
-    note.innerHTML = '<span class="storage-dot"></span>salvo na nuvem do artifact';
-  } else {
-    note.innerHTML = '<span class="storage-dot" style="background:#F59E0B"></span>salvo neste navegador (localStorage)';
-  }
+  if (note) note.innerHTML = noteHtml;
+  const noteMobile = document.getElementById('storageNoteMobile');
+  if (noteMobile) noteMobile.innerHTML = noteHtml;
 }
 
 function switchTab(tabName) {
@@ -1708,6 +1806,12 @@ async function init() {
   renderReport(dateKeysAsc);
   renderCalorieSection(dateKeysAsc);
   document.getElementById('clearDataBtn').addEventListener('click', onClearData);
+  document.getElementById('exportDataBtn').addEventListener('click', onExportData);
+  document.getElementById('importDataBtn').addEventListener('click', onImportClick);
+  document.getElementById('importFileInput').addEventListener('change', onImportFileSelected);
+  document.getElementById('clearDataBtnMobile').addEventListener('click', onClearData);
+  document.getElementById('exportDataBtnMobile').addEventListener('click', onExportData);
+  document.getElementById('importDataBtnMobile').addEventListener('click', onImportClick);
   document.getElementById('weightInput').addEventListener('change', onWeightChange);
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
